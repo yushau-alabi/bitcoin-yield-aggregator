@@ -83,3 +83,107 @@
 (define-private (is-contract-owner (sender principal))
     (is-eq sender CONTRACT-OWNER)
 )
+
+;; Protocol Management Functions
+(define-public (add-protocol 
+    (protocol-id uint) 
+    (name (string-ascii 50)) 
+    (base-apy uint) 
+    (max-allocation-percentage uint)
+)
+    (begin 
+        ;; Enhanced Input Validation
+        (asserts! (is-contract-owner tx-sender) ERR-UNAUTHORIZED)
+        (asserts! (is-valid-protocol-id protocol-id) ERR-INVALID-INPUT)
+        (asserts! (is-valid-protocol-name name) ERR-INVALID-INPUT)
+        (asserts! (is-valid-base-apy base-apy) ERR-INVALID-INPUT)
+        (asserts! (is-valid-allocation-percentage max-allocation-percentage) ERR-INVALID-INPUT)
+        (asserts! (< (var-get total-protocols) MAX-PROTOCOLS) ERR-PROTOCOL-LIMIT-REACHED)
+        
+        (map-set supported-protocols 
+            {protocol-id: protocol-id} 
+            {
+                name: name,
+                base-apy: base-apy,
+                max-allocation-percentage: max-allocation-percentage,
+                active: true
+            }
+        )
+        (var-set total-protocols (+ (var-get total-protocols) u1))
+        (ok true)
+    )
+)
+
+;; Deposit Functionality
+(define-public (deposit 
+    (protocol-id uint) 
+    (amount uint)
+)
+    (let 
+        (
+            (protocol (unwrap! 
+                (map-get? supported-protocols {protocol-id: protocol-id}) 
+                ERR-INVALID-PROTOCOL
+            ))
+            (current-total-deposits (default-to 
+                {total-deposit: u0} 
+                (map-get? protocol-total-deposits {protocol-id: protocol-id})
+            ))
+            (max-protocol-deposit (/ 
+                (* (get max-allocation-percentage protocol) BASE-DENOMINATION) 
+                u100
+            ))
+        )
+        ;; Enhanced Input Validation
+        (asserts! (is-valid-protocol-id protocol-id) ERR-INVALID-INPUT)
+        (asserts! (is-valid-deposit-amount amount) ERR-INVALID-INPUT)
+        (asserts! (get active protocol) ERR-INVALID-PROTOCOL)
+        (asserts! 
+            (<= (+ (get total-deposit current-total-deposits) amount) max-protocol-deposit) 
+            ERR-PROTOCOL-LIMIT-REACHED
+        )
+
+        ;; Update User and Protocol Deposits
+        (map-set user-deposits 
+            {user: tx-sender, protocol-id: protocol-id}
+            {amount: amount, deposit-time: block-height}
+        )
+        (map-set protocol-total-deposits 
+            {protocol-id: protocol-id} 
+            {total-deposit: (+ (get total-deposit current-total-deposits) amount)}
+        )
+
+        (ok true)
+    )
+)
+
+;; Yield Calculation (Simplified Model)
+(define-read-only (calculate-yield 
+    (protocol-id uint) 
+    (user principal)
+)
+    (let 
+        (
+            (protocol (unwrap! 
+                (map-get? supported-protocols {protocol-id: protocol-id}) 
+                ERR-INVALID-PROTOCOL
+            ))
+            (user-deposit (unwrap! 
+                (map-get? user-deposits {user: user, protocol-id: protocol-id}) 
+                ERR-INSUFFICIENT-FUNDS
+            ))
+            (blocks-since-deposit (- block-height (get deposit-time user-deposit)))
+            (annual-yield (/ 
+                (* (get base-apy protocol) (get amount user-deposit)) 
+                BASE-DENOMINATION
+            ))
+        )
+        ;; Additional input validation
+        (asserts! (is-valid-protocol-id protocol-id) ERR-INVALID-INPUT)
+        
+        (ok (/ 
+            (* annual-yield blocks-since-deposit) 
+            u52596  ;; Approximate blocks in a year
+        ))
+    )
+)
